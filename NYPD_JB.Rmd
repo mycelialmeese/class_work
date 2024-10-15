@@ -1,0 +1,115 @@
+---
+title: "NYPD Shooting Incident Data"
+author: "Jake Bloom"
+date: "2024-10-12"
+output: pdf_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+required_packages <- c("dplyr", "ggplot2", "lubridate", "tidyverse")
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(dplyr)
+```
+# Violent Crime and Sunshine:
+A look at the correlation between time of day and time of year in NYPD Shooting Data. 
+
+## Importing Data
+Loading the NYPD Shooting Incident Data (Historical)
+```{r get_nypd_data}
+nydata <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD") 
+```
+
+## Tidying and Transforming Data
+Making the date into a <date> class instead of <chr>
+```{r change_date_format}
+nydate <- nydata %>% rename(DATE = 'OCCUR_DATE') %>% 
+  mutate(DATE = mdy(DATE))
+```
+Cutting out Leap Year dates - This would otherwise skew further analysis
+```{r cut_leap_year_days}
+nydate_trimmed <- nydate %>%
+  mutate(year = year(DATE),  # Extract year
+         month_day = format(DATE, "%m-%d")) %>%
+  filter(month_day != "02-29")    # Remove leap day
+  #filter(month_day != "01-01") %> # Remove Jan 1
+  ##filter(month_day != "07-04")  # Remove night of 4th of July
+```
+We need to turn dates into a rank order of daylight hours. Since NY is in the Northern Hemisphere that means we make the winter solstice to 0 and the summer solstice to 182.
+```{r rank_daylight}
+#Creating a daylight rank with Dec 21 being low and Jun 21 being high
+nydate_trimmed <- nydate_trimmed %>%
+  mutate(day_of_year = yday(DATE)) %>%  
+  mutate(daylight_rank = case_when(
+    day_of_year >= 355 ~ day_of_year - 355, 
+    day_of_year < 172 ~ day_of_year + 10,        
+    day_of_year >= 172 & day_of_year < 355 ~ (354.5- day_of_year)
+  ))
+```
+Next we need to normalize the daily counts totals to counts per day, per year such that 0 represents a day with average shootings.
+```{r normalize}
+nydate_daily <- nydate_trimmed %>%
+  group_by(daylight_rank, year) %>%
+  summarise(daily_count = n()) %>%
+  ungroup()
+years_in_data <- length(unique(nydate_daily$year))
+nydate_daily <- nydate_daily %>%
+  group_by(daylight_rank) %>%
+  summarise(per_year_count = sum(daily_count) / years_in_data)  # Normalize to per-year basis
+nydate_daily <- nydate_daily %>%
+  mutate(mean_centered_count = per_year_count - mean(per_year_count))
+```
+## Analyzing/Modeling Data
+Creating a linear fit to relative shootings/day vs daylight rank
+```{r lin fit}
+fit <- lm(mean_centered_count ~ daylight_rank, data = nydate_daily)
+r_squared <- summary(fit)$r.squared
+```
+## Graphing Data
+### Plotting the time of day vs number of shootings in a histogram
+```{r plot_hist}
+ ggplot(data = nydate, aes(x = OCCUR_TIME))+geom_histogram()+
+  labs(title = "Histogram of Shootings vs Time of Day",
+       x = "Time of Day",
+       y = "Shootings Observed")
+```
+
+### Plotting the relative shootings/day vs daylight rank in ggplot
+```{r plot_chart}
+ggplot(nydate_daily, aes(x = daylight_rank, y = mean_centered_count)) +
+  geom_point(aes(color = "Data Points")) +  # Points and specify label for legend
+  geom_hline(yintercept = 0, linetype = "solid", color = "azure4") +  # Line at y=0
+  geom_smooth(method = "lm", aes(color = "Linear Fit"), se = FALSE, linetype = "solid") +  # Linear fit
+  scale_color_manual(values = c( "Linear Fit" = "blue"), name = "Legend") + 
+  
+  scale_x_continuous(
+    breaks = c(1, 182, 365),
+    labels = c("Dec 21", "Jun 21", "Dec 20")
+  ) +
+  
+  labs(title = "Relative Shootings per Day by Daylight Hours Rank",
+       x = "Daylight Hours Rank",
+       y = "Mean-Centered Shootings per Day") +
+  
+  annotate("text", x = 25, y = max(nydate_daily$mean_centered_count), 
+           label = paste("R² =", round(r_squared, 3)), size = 5, color = "blue") +
+  
+  theme_minimal()
+```
+
+## Interpreting Results
+### Biases
+A significant, important bias I imparted is how I ranked the daylight data: linearly. True daylight hours don't change in a linear fashion. The delta in daylight is smallest around the solstices and largest around the equinoxes. This results in a sinusoidal rank order instead of a linear. In addition to this model bias, I have the personal bias of an aversion to handguns and violence. Due to this I tried to avoid any humanizing aspects of the data set, such as sex, age, and race. Instead I tried to analyze time, which I saw as the most nonhuman variable in the data set.  
+
+### Observations
+It's quite clear from the first plot that shootings are much more likely to happen past at night in NY. We can see a low around 9:00 am and a peak around midnight.
+
+
+The next plot looks at shootings vs the relative amount of daylight in a year. The R^2 value is quite low when looking at the effect of daylight hours on number - but its not 0. This means there is a weak, positive relationship between the length of daylight and the relative number of shootings. 
+
+This is contradictory to shootings happening at night - however daylight hours line up with other factors like temperature. Nightly lows vs number of shootings would be a great follow up to this hypothesis.
+
+Also of note are some of the high outliers: these are New Years and 4th of July. These dates likely have higher shooting instances as gunfire can be mistaken for fireworks leading to false calls as well as criminals camouflaging their activity.
+ 
+
